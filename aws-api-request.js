@@ -3,7 +3,7 @@ const crypto = require('crypto'),
     zlib = require('zlib');
 
 function awsApiRequest(options) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
         let region = options.region || awsApiRequest.region || process.env.AWS_DEFAULT_REGION,
             service = options.service,
             accessKey = options.accessKey || awsApiRequest.accessKey || process.env.AWS_ACCESS_KEY_ID,
@@ -89,14 +89,27 @@ function awsApiRequest(options) {
         reqHeaders.Authorization = authHeader;
 
         //Now, lets finally do a HTTP REQUEST!!!
-        request(method, path, reqHeaders, querystring, payload, (err, result) => {
-            if (err) {
-                reject(err);
-            } else {
-                resolve(result);
+        const maxRetries = 10;
+        const sleepTime = 1000; // ms
+        let retryCount = 0;
+        try {
+            let result;
+            do {
+                result = await request(method, path, reqHeaders, querystring, payload);
             }
-        });
+            while (result.statusCode === 400 && result.data && result.data.Error && result.data.Error.Code == 'Throttling' && retryCount <= maxRetries ) {
+                retryCount += 1;
+                await sleep(sleepTime);
+            }
+            resolve(result);
+        } catch (reqErr) {
+            reject(reqErr);
+        }
     });
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function createResult(data, res) {
@@ -110,45 +123,46 @@ function createResult(data, res) {
     }
 }
 
-function request(method, path, headers, querystring, data, callback) {
-    
-    let qs = Object.keys(querystring).map(k => `${k}=${encodeURIComponent(querystring[k])}`).join('&');
-    path += '?' + qs;
-    let hostname = headers.Host;
-    delete headers.Host;
-    headers['Content-Length'] = data.length;
-    const port = 443;
-    try {
-        const options = { hostname, port, path, method, headers };
-        const req = https.request(options, res => {
-    
-            let chunks = [];
-            res.on('data', d => chunks.push(d));
-            res.on('end', () => {
-                let buffer = Buffer.concat(chunks);
-                if (res.headers['content-encoding'] === 'gzip') {
-                    zlib.gunzip(buffer, (err, decoded) => {
-                        if (err) {
-                            callback(err);
-                        } else {
-                            callback(null, createResult(decoded, res));
-                        }
-                    });
-                } else {
-                    callback(null, createResult(buffer, res));
-                }
+function request(method, path, headers, querystring, data) {
+    return new Promise((resolve, reject) => {
+        let qs = Object.keys(querystring).map(k => `${k}=${encodeURIComponent(querystring[k])}`).join('&');
+        path += '?' + qs;
+        let hostname = headers.Host;
+        delete headers.Host;
+        headers['Content-Length'] = data.length;
+        const port = 443;
+        try {
+            const options = { hostname, port, path, method, headers };
+            const req = https.request(options, res => {
+        
+                let chunks = [];
+                res.on('data', d => chunks.push(d));
+                res.on('end', () => {
+                    let buffer = Buffer.concat(chunks);
+                    if (res.headers['content-encoding'] === 'gzip') {
+                        zlib.gunzip(buffer, (err, decoded) => {
+                            if (err) {
+                                reject(err);
+                            } else {
+                                resolve(createResult(decoded, res));
+                            }
+                        });
+                    } else {
+                        resolve(createResult(buffer, res));
+                    }
+                });
+        
             });
+            req.on('error', err => reject(err));
     
-        });
-        req.on('error', err => callback(err));
-
-        if (data) {
-            req.write(data);
+            if (data) {
+                req.write(data);
+            }
+            req.end();
+        } catch(err) {
+            reject(err);
         }
-        req.end();
-    } catch(err) {
-        callback(err);
-    }
+    });
 }
 
 module.exports = awsApiRequest;
