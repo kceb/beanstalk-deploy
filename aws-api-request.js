@@ -97,7 +97,7 @@ function awsApiRequest(options) {
             do {
                 result = await request(method, path, reqHeaders, querystring, payload);
             }
-            while (result.statusCode === 400 && result.data && result.data.Error && result.data.Error.Code == 'Throttling' && retryCount <= maxRetries ) {
+            while (result.statusCode >= 400 && result.data && result.data.Error && result.data.Error.Code == 'Throttling' && retryCount <= maxRetries ) {
                 retryCount += 1;
                 await sleep(sleepTime);
             }
